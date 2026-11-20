@@ -247,8 +247,11 @@ export class DshExecutor implements Executor {
   private async prepareDirectory(ticket: Ticket): Promise<void> {
     const directory = ticket.execution?.directory ?? ''
     await mkdir(dirname(directory), { recursive: true })
-    const command = this.host.store.settings().executor.prepare.trim()
     const env = Object.fromEntries(this.host.environment(ticket).map(variable => [variable.key, variable.value]))
+    const gitea = sourceTrigger(this.host, ticket)?.source === 'gitea'
+    if (gitea && !env.DSH_SUPERAGENT_GITEA_CLONE_URL) throw new PrepareFailed('The ticket source is outside the configured Gitea repositories')
+    const command = gitea ? 'git clone -- "$DSH_SUPERAGENT_GITEA_CLONE_URL" "$DSH_SUPERAGENT_DIR"'
+      : this.host.store.settings().executor.prepare.trim()
     // Enforce a timeout so a hung prepare command (such as on a credential prompt) fails the ticket instead of holding a worker slot indefinitely.
     const signal = AbortSignal.any([this.host.lifetime, AbortSignal.timeout(PREPARE_TIMEOUT_MS)])
     if (command) await runAsWorker(this.host.context.subprocess, ['sh', '-c', command], dirname(directory), signal, env)

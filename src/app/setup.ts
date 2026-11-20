@@ -5,6 +5,7 @@ import { SETUP_FIELDS, resolveDeployment, resolveFeishuBot, workerProbe, type De
 import { agentVariables, applyEnvironment, verifyEnvironment, withoutDirectory, workerBin, writeEnvironment } from '../infra/environment.ts'
 import type { Settings, SettingsBlock } from '../policy.ts'
 import { SetupError, type SetupProblem } from '../setup.ts'
+import { resolveGitea } from '../sources/gitea-api.ts'
 
 export interface SetupHost {
   readonly context: Context
@@ -13,8 +14,11 @@ export interface SetupHost {
   restart(): void
 }
 
-const setupFields = (settings: Settings) =>
-  JSON.stringify(Object.entries(SETUP_FIELDS).map(([id, keys]) => keys.map(key => settings.sources[id]?.config[key] ?? '')))
+const setupFields = (settings: Settings) => {
+  const giteaEnabled = settings.sources.gitea?.enabled ?? false
+  return JSON.stringify([giteaEnabled, giteaEnabled ? settings.sources.github?.enabled ?? true : true,
+    ...Object.entries(SETUP_FIELDS).map(([id, keys]) => keys.map(key => settings.sources[id]?.config[key] ?? ''))])
+}
 export const setupChanged = (before: Settings, after: Settings): boolean => setupFields(before) !== setupFields(after)
 
 /**
@@ -60,6 +64,12 @@ export class Setup {
   /** Verify account CLIs for a modified source block before saving, ignoring setup errors belonging to other blocks. */
   async checkAccounts(block: SettingsBlock, settings: Settings): Promise<void> {
     const { machine } = this.host
+    if (block === 'source:gitea') {
+      const source = settings.sources.gitea
+      if (source?.enabled) await resolveGitea(source.config, this.host.lifetime)
+      return
+    }
+    if (block === 'source:github' && settings.sources.gitea?.enabled && settings.sources.github?.enabled === false) return
     const check = block === 'source:feishu' ? resolveFeishuBot(machine, settings.sources.feishu?.config, this.probe())
       : resolveDeployment(machine, settings.sources.github?.config, this.probe())
     await check.catch((error: unknown) => { if (!(error instanceof SetupError) || error.place === block.slice(7)) throw error })
@@ -76,14 +86,20 @@ export class Setup {
   private async resolve(settings: Settings): Promise<Deployment> {
     const { context, machine, lifetime } = this.host
     const probe = this.probe()
-    const deployment = await resolveDeployment(machine, settings.sources.github?.config, probe)
+    const giteaSource = settings.sources.gitea
+    const gitea = giteaSource?.enabled ? await resolveGitea(giteaSource.config, lifetime) : undefined
+    const githubSource = settings.sources.github
+    const githubConfigured = githubSource?.config.repository || githubSource?.config.cli
+    const deployment = gitea && (!githubConfigured || githubSource?.enabled === false)
+      ? { ...machine, repository: '', github: { cli: '', login: '', noreply: '' } }
+      : await resolveDeployment(machine, githubSource?.config, probe)
     const feishu = await resolveFeishuBot(machine, settings.sources.feishu?.config, probe).catch((error: unknown) => {
       if (!(error instanceof SetupError)) throw error
       this.feishuProblem = error.problem
       context.logger.warn('dsh-superagent leaves Feishu out: %s', error.message)
       return undefined
     })
-    const resolved = { ...deployment, ...(feishu ? { feishu } : {}) }
+    const resolved = { ...deployment, ...(feishu ? { feishu } : {}), ...(gitea ? { gitea } : {}) }
     const machineProblem = (error: unknown): never => {
       if (error instanceof SetupError) throw error
       throw new SetupError('environmentFailed', { output: error instanceof Error ? error.message : String(error) })
