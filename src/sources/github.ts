@@ -103,7 +103,7 @@ export const githubKind: SourceKind<GithubConfig> = {
         DSH_SUPERAGENT_GITHUB_PR_HEAD: number && trigger?.meta.isPr === true ? `refs/pull/${number}/head` : '' }
     },
   },
-  facts: (deployment): Record<string, Localized | string> => deployment ? {
+  facts: (deployment): Record<string, Localized | string> => deployment?.github.login ? {
     cli: { zh: `当前账号 @${deployment.github.login}`, en: `Current account @${deployment.github.login}` },
   } : {},
 }
@@ -130,6 +130,7 @@ async function watch(ctx: SourceContext, signal: AbortSignal): Promise<void> {
   await ctx.ready
   // Setup restarts dsh-superagent once it resolves the accounts; until then nothing is polled.
   if (!ctx.configured()) { ctx.report('github', health('paused', 'setupPending')); return }
+  if (!ctx.deployment.repository) { ctx.report('github', health('paused', 'sourceOff')); return }
   while (!signal.aborted) {
     const config = ctx.config<GithubConfig>(SOURCE)
     try {

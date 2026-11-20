@@ -3,6 +3,7 @@ import { z } from 'zod'
 import { liveTicket, type EngineForExecutor, type Ticket } from '../../core/index.ts'
 import { IM_WORDS } from '../../infra/text.ts'
 import { claimPull, readPull } from '../../sources/github-pull.ts'
+import { publishGiteaPull } from '../../sources/gitea-api.ts'
 import type { SourceContext } from '../../sources/host.ts'
 import { readResource, type ResourceHost } from '../resources.ts'
 import type { Store } from '../store.ts'
@@ -17,11 +18,13 @@ export interface ExecutorToolsHost {
   readonly resources: ResourceHost
   /** GitHub Source context whose pull-request rules govern claiming a reported PR. */
   readonly github: SourceContext
+  giteaOrigin?(ticket: Ticket): Record<string, unknown> | undefined
   sendReplies(): Promise<void>
 }
 
 export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
   const ticketId = ticket.id
+  const gitea = host.giteaOrigin?.(ticket)
   return [
     readTool('Read one page of a resource of this ticket that the resource parameter lists. Follow next_offset, and next_resource where a page names one.',
       true, (resource, offset, limit, signal) => readResource(host.resources, resource, offset, limit, ticketId, signal)),
@@ -71,6 +74,17 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
       }).strict(),
       execute: async args => ({ trigger_id: args.trigger_id, queued: host.engine.handback(ticketId, args.trigger_id, args.reason) }),
     }),
+    ...(gitea ? [tool({
+      name: 'orchestrator_gitea_pull',
+      description: 'Open a pull request in the originating Gitea repository after pushing origin agent/$DSH_SUPERAGENT_NAME. Returns the URL of the pull request.',
+      schema: z.object({ title: z.string().trim().min(1).max(255), body: z.string().trim().min(1).max(20000) }).strict(),
+      execute: async (args, signal) => {
+        const current = host.store.tickets.get(ticketId)
+        const deployment = host.github.deployment.gitea
+        if (!current || !liveTicket(current) || !current.execution?.name || !deployment) throw new Error('No active Gitea ticket')
+        return publishGiteaPull(deployment, gitea, `agent/${current.execution.name}`, args.title, args.body, signal)
+      },
+    })] : []),
     tool({
       name: 'orchestrator_report',
       description: 'Report progress, ready, blocked, failed or dropped, as the work and handoff sections say.',
@@ -79,12 +93,14 @@ export function executorTools(host: ExecutorToolsHost, ticket: Ticket): Tool[] {
         summary: z.string().min(1),
         human_action: z.string().trim().min(1).max(1000).nullish().describe('One concrete question for a person, also with state=progress; omit to keep the pending one, null to clear it.'),
         question_for_trigger_id: z.string().optional().describe('With human_action: the human message that raised the question, which is asked where that person wrote.'),
-        pr_number: z.number().int().positive().nullish().describe(`The ticket's PR: its source PR, or one by ${host.github.deployment.github.login} from a branch named after this ticket (DSH_SUPERAGENT_NAME).`),
+        pr_number: z.number().int().positive().nullish().describe(gitea ? 'Leave empty for Gitea. Include the Gitea PR URL in summary.'
+          : `The ticket's PR: its source PR, or one by ${host.github.deployment.github.login} from a branch named after this ticket (DSH_SUPERAGENT_NAME).`),
         reply_to_trigger_id: z.string().optional().describe('The explicit human question this report answers; never for ordinary progress.'),
       }).strict(),
       execute: async (args, signal) => {
         const current = host.store.tickets.get(ticketId)
         if (!current || !liveTicket(current)) throw new Error('Ticket ended (PR was closed or work finished); do not resume it')
+        if (gitea && args.pr_number != null) throw new Error('Include the Gitea PR URL in summary and omit pr_number')
         const pull = args.pr_number != null ? await readPull(host.github, args.pr_number, signal) : undefined
         // Claim the PR, record the report, and queue the relay atomically so a rejected PR claim or invalid report leaves no partial state, and a recorded report always reaches the main Session.
         return host.store.atomic(() => {

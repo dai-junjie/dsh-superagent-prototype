@@ -244,8 +244,14 @@ export class Sessions {
     binding.disposers.push(agent.ctx.systemPrompt.section({ name: 'dsh-superagent-policy', order: 9999, interpolate: false, text: context => {
       const version = this.promptFor(agent, context.signal !== undefined)
       const current = ticket && host.store.tickets.get(ticket.id)
-      const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', current ? host.environment(current) : undefined)
-      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}`
+      const environment = current ? host.environment(current) : undefined
+      const composed = host.prompts.compose(version.config, master ? 'orchestrator' : 'worker', environment)
+      const gitea = environment?.some(variable => variable.key === 'DSH_SUPERAGENT_GITEA_CLONE_URL' && variable.value)
+        ? '\nThis is a Gitea ticket. The GitHub-specific PR instructions do not apply. Verify origin against DSH_SUPERAGENT_GITEA_CLONE_URL before pushing. '
+          + 'Use the configured commit author, or DSH_SUPERAGENT_GITEA_ACCOUNT with its noreply email at the Gitea host. '
+          + 'For an existing PR, inspect DSH_SUPERAGENT_GITEA_PR_HEAD as needed. For code delivery, push agent/$DSH_SUPERAGENT_NAME to origin '
+          + 'and use orchestrator_gitea_pull to open a PR in that repository. Include its URL in orchestrator_report summary and omit pr_number.' : ''
+      return `[dsh-superagent prompt revision ${version.revision}]\n${composed}\n${current ? mandateInstructions(current.mandate) : ''}${gitea}`
     }, ...(master ? { complete: true } : {}) }))
     // A recreated skill scope (e.g. after the skills service restarts) starts empty, so reset `binding.skills` before rebinding.
     const skillScope = agent.ctx.inject(['skills'], scope => {

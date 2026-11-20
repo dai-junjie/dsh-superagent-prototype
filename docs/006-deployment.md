@@ -5,7 +5,7 @@ Use this guide to install, configure and operate dsh-superagent. It covers accou
 ## What runs
 
 - **A dedicated DeepSeek Harness profile**, called `superagent` in this guide. Create it from the Web profile template. It loads the bundle and serves its panel on `127.0.0.1`. Keep it separate from the profile you work in: the plugin changes process-wide `PATH` and git settings, and its process needs independent restarts and upgrades.
-- **An agent GitHub account.** The agent comments, pushes branches and opens pull requests as this account, through a GitHub CLI signed in only as that account.
+- **An agent GitHub or Gitea account.** The agent comments, pushes branches and opens pull requests as the configured account.
 - **Optional:** a Feishu bot for chat requests.
 
 Plugin configuration holds the state directory and machine limits. Use the panel for everything else: Sources for the repository and accounts, Policy for allowed lists, and Execution for worker directories and commands.
@@ -21,12 +21,20 @@ Both presets run with `danger-full-access` as the operator's OS user and read me
 ## Prerequisites
 
 - Node.js 22.19+ or 24+, pnpm, git 2.32+, Python 3.8+ and tmux
-- GitHub CLI (`gh`) 2.48 or later. Source CLI fields must point to `gh` or `lark-cli` wrappers; the host relies on their subcommands and output formats.
-- A repository on github.com; GitHub Enterprise Server is not supported. To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees. Install `git-lfs` if that repository uses Git LFS.
+- For GitHub, GitHub CLI (`gh`) 2.48 or later and a repository on github.com. To create a checkout per Ticket, keep a local clone from which the prepare command can add worktrees.
+- Install `git-lfs` if a target repository uses Git LFS.
 - A model provider configured for DeepSeek Harness. dsh-superagent uses the profile's default model unless the Eval or Execution settings name another.
 - For Feishu: `lark-cli` (tested with 1.0.90) and a Feishu or Lark app with a bot
 
 ## Accounts
+
+### Agent Gitea account
+
+1. Give the agent account push access to each target repository. Create a personal access token with sufficient user, repository and Issue scopes to look up the account, clone and push, read and post Issue comments, and open PRs. Put only the token in a file owned by the profile's OS user with mode `0600`.
+2. In **Settings → Sources → Gitea**, enable the source and enter the HTTPS instance URL, the account name, the token file's absolute path, and each repository as `owner/repository`. Saving verifies the token's identity and push permission for every repository. A Gitea-only installation can leave GitHub unconfigured.
+3. Add the human requesters to the Gitea policy allowlist. They can request work by mentioning the agent in a new Issue, PR or conversation comment. The first poll starts a checkpoint for each repository. Later polls resume from that checkpoint.
+
+Gitea tickets clone their source repository into the normal ticket directory. Their prepare step uses this clone automatically. The worker can push its ticket branch and open a PR against the same repository's default branch, and the handoff is posted in the originating Issue or PR. PR conversation comments use the Issue comments API.
 
 ### Agent GitHub account
 
